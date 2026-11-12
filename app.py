@@ -19,6 +19,34 @@ st.set_page_config(
 
 
 # ==================================================
+# MODERN INTERFACE STYLING
+# ==================================================
+st.markdown("""
+<style>
+    .stApp { background: linear-gradient(135deg, #f5f7fb 0%, #edf2fa 100%); }
+    [data-testid="stSidebar"] { background: linear-gradient(180deg, #101a35 0%, #1d2b53 100%); }
+    [data-testid="stSidebar"] * { color: #f5f7ff !important; }
+    [data-testid="stSidebar"] [data-testid="stRadio"] label {
+        background: rgba(255,255,255,.07); border-radius: 10px; padding: 7px 10px; margin: 3px 0;
+    }
+    [data-testid="stMetric"] { background: white; border: 1px solid #e4e9f2;
+        padding: 17px 18px; border-radius: 15px; box-shadow: 0 5px 18px rgba(28,45,85,.06); }
+    [data-testid="stMetricValue"] { color: #17264a; }
+    div[data-testid="stForm"] { background: white; padding: 18px; border-radius: 14px; }
+    div.stButton > button, div.stDownloadButton > button,
+    div[data-testid="stFormSubmitButton"] > button { border-radius: 10px; font-weight: 650; }
+    h1, h2, h3 { color: #17264a; }
+    .hero-card { padding: 25px 28px; border-radius: 18px; color: white;
+        background: linear-gradient(115deg, #17264a 0%, #354fa0 60%, #7454c8 100%);
+        margin-bottom: 18px; box-shadow: 0 10px 28px rgba(31,49,100,.16); }
+    .hero-card h2 { color: white; margin: 0 0 7px 0; }
+    .hero-card p { color: #e6eaff; margin: 0; }
+    .small-note { color: #64748b; font-size:  .88rem; }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ==================================================
 # 2. DATABASE SETUP
 # ==================================================
 
@@ -103,6 +131,15 @@ def create_tables():
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS activity_history (
+            activity_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            activity_time TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            activity_type TEXT NOT NULL,
+            activity_details TEXT NOT NULL
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -171,15 +208,69 @@ def get_processes():
     return df
 
 
+def log_activity(activity_type, activity_details):
+    """Save an important application action in the activity history."""
+    conn = get_database_connection()
+    conn.execute(
+        "INSERT INTO activity_history (activity_type, activity_details) VALUES (?, ?)",
+        (str(activity_type), str(activity_details))
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_employee_status_for_date(employee_id, selected_date):
+    """Use a generated roster status when present; otherwise check known restrictions."""
+    date_text = selected_date.strftime("%Y-%m-%d")
+    conn = get_database_connection()
+    saved = conn.execute(
+        "SELECT status FROM roster WHERE employee_id = ? AND roster_date = ? ORDER BY roster_id DESC LIMIT 1",
+        (employee_id, date_text)
+    ).fetchone()
+    if saved:
+        conn.close()
+        return saved[0]
+    leave = conn.execute(
+        "SELECT leave_id FROM leaves WHERE employee_id = ? AND leave_date = ?",
+        (employee_id, date_text)
+    ).fetchone()
+    holiday = conn.execute(
+        "SELECT holiday_id FROM holidays WHERE holiday_date = ?", (date_text,)
+    ).fetchone()
+    employee = conn.execute(
+        "SELECT availability FROM employees WHERE employee_id = ?", (employee_id,)
+    ).fetchone()
+    conn.close()
+    if leave:
+        return "Leave"
+    if holiday:
+        return "Public Holiday"
+    if not employee or employee[0] == "Unavailable":
+        return "Unavailable"
+    return "Not Generated"
+
+
+def get_assignments_detail():
+    conn = get_database_connection()
+    df = pd.read_sql_query("""
+        SELECT a.employee_id, e.employee_name, b.brand_id, b.brand_name,
+               p.process_id, p.process_name, e.pod_id, pods.pod_name
+        FROM assignments a
+        JOIN employees e ON a.employee_id = e.employee_id
+        JOIN brands b ON a.brand_id = b.brand_id
+        JOIN processes p ON a.process_id = p.process_id
+        LEFT JOIN pods ON e.pod_id = pods.pod_id
+        ORDER BY b.brand_name, p.process_name, e.employee_name
+    """, conn)
+    conn.close()
+    return df
+
+
 # ==================================================
 # 4. APPLICATION HEADER
 # ==================================================
 
-st.title("📅 Smart Roster Management System")
-st.write(
-    "A simple platform to manage employees, brands, "
-    "processes and monthly work schedules."
-)
+st.markdown("<div class='hero-card'><h2>SMART ROSTER INTELLIGENCE</h2><p>Workforce operations • Scheduling • Availability insights • Conflict monitoring</p></div>", unsafe_allow_html=True)
 
 
 # ==================================================
@@ -212,34 +303,52 @@ selected_page = st.sidebar.radio(
 # ==================================================
 
 if selected_page == "Dashboard":
-    st.header("Dashboard Overview")
+    st.header("📊 Workforce Command Centre")
+    st.caption("A live overview of your people, assignments and scheduling data.")
 
-    columns = st.columns(5)
-    metrics = [
-        ("Total Employees", "employees"),
-        ("Total Brands", "brands"),
-        ("Total Pods", "pods"),
-        ("Total Processes", "processes"),
-        ("Public Holidays", "holidays")
-    ]
+    employees_total = get_record_count("employees")
+    brands_total = get_record_count("brands")
+    pods_total = get_record_count("pods")
+    processes_total = get_record_count("processes")
+    assignments_total = get_record_count("assignments")
+    roster_total = get_record_count("roster")
 
-    for column, (label, table) in zip(columns, metrics):
-        column.metric(label, get_record_count(table))
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Employees", employees_total, help="Employees registered in the system")
+    k2.metric("Brands", brands_total)
+    k3.metric("Pods", pods_total)
+    k4.metric("Processes", processes_total)
+    k5.metric("Assignments", assignments_total)
 
     st.divider()
-    st.subheader("Welcome to your dashboard")
-    st.info(
-        "Manage employees, brands, operational processes, "
-        "public holidays and monthly schedules from one place."
-    )
+    left, right = st.columns([1.25, 1])
+    with left:
+        st.subheader("📈 Workforce distribution")
+        employee_df = get_employees()
+        if not employee_df.empty:
+            pod_counts = employee_df["pod_name"].fillna("Not Assigned").value_counts().rename_axis("Pod").reset_index(name="Employees")
+            st.bar_chart(pod_counts.set_index("Pod"))
+        else:
+            st.info("Add employees to see workforce distribution.")
+    with right:
+        st.subheader("🧭 System readiness")
+        readiness = [
+            ("Employee records", employees_total), ("Brand records", brands_total),
+            ("Process records", processes_total), ("Assignments", assignments_total),
+            ("Generated roster rows", roster_total)
+        ]
+        for label, value in readiness:
+            st.write(f"**{label}** · {value}")
+            st.progress(min(value / max(employees_total, 1), 1.0) if label == "Generated roster rows" else (1.0 if value else 0.0))
 
-    st.write("👥 Employee information")
-    st.write("🏢 Brand assignments")
-    st.write("⚙️ Operational processes")
-    st.write("📅 Monthly employee schedules")
-    st.write("🏖️ Weekly offs and planned leaves")
-    st.write("🎉 Public holiday management")
-    st.write("⚠️ Scheduling conflict detection")
+    st.divider()
+    st.subheader("⚡ Quick actions")
+    q1, q2, q3, q4 = st.columns(4)
+    q1.info("👥 **People**\n\nManage employees and pods.")
+    q2.info("🔗 **Assignments**\n\nConnect employees to brands and processes.")
+    q3.info("📅 **Roster**\n\nGenerate monthly schedules.")
+    q4.info("🧠 **Intelligence**\n\nExplore staffing and workload insights.")
+    st.caption("Tip: Generate a monthly roster first to unlock date-specific heatmap and workload insights.")
 
 
 # ==================================================
@@ -1102,6 +1211,7 @@ elif selected_page == "Roster":
 
             conn.commit()
             conn.close()
+            log_activity("Roster Generated", f"Generated roster for {calendar.month_name[month]} {year} with {len(employees)} employees.")
             st.success("Monthly roster generated successfully!")
             st.rerun()
 
@@ -1214,6 +1324,7 @@ elif selected_page == "Leave Management":
                             VALUES (?, ?, ?)
                         """, (employee_id, date_string, leave_type))
                         conn.commit()
+                        log_activity("Leave Added", f"Leave registered for {selected_employee} on {date_string} ({leave_type}).")
                         st.success("Leave added successfully!")
                         st.rerun()
                     conn.close()
@@ -1295,6 +1406,7 @@ elif selected_page == "Public Holidays":
                             VALUES (?, ?)
                         """, (date_string, holiday_name.strip()))
                         conn.commit()
+                        log_activity("Holiday Added", f"Added {holiday_name.strip()} on {date_string}.")
                         st.success("Public holiday added successfully!")
                         st.rerun()
                     conn.close()
@@ -1434,11 +1546,188 @@ elif selected_page == "Roster Conflicts":
 
 
 # ==================================================
+# 17. STAFFING HEATMAP
+# ==================================================
+
+elif selected_page == "Staffing Heatmap":
+    st.header("🟩 Smart Staffing Heatmap")
+    st.write("See how many assigned employees are marked as working for each brand and process on each date.")
+    selected_month_heat = st.date_input("Select month", value=date.today(), key="heatmap_month")
+    month_key_heat = selected_month_heat.strftime("%Y-%m")
+    assignments_df = get_assignments_detail()
+    conn = get_database_connection()
+    roster_heat = pd.read_sql_query("""
+        SELECT r.employee_id, r.roster_date, r.status
+        FROM roster r WHERE substr(r.roster_date, 1, 7) = ?
+    """, conn, params=(month_key_heat,))
+    conn.close()
+    if assignments_df.empty:
+        st.warning("Create employee-brand-process assignments first.")
+    elif roster_heat.empty:
+        st.info("No roster exists for this month. Open the Roster page and generate it first.")
+    else:
+        working = roster_heat[roster_heat["status"] == "Working"]
+        joined = assignments_df.merge(working, on="employee_id", how="inner")
+        joined["day"] = pd.to_datetime(joined["roster_date"]).dt.strftime("%d %b")
+        joined["Coverage"] = joined["brand_name"] + " / " + joined["process_name"]
+        counts = joined.groupby(["Coverage", "day"])["employee_id"].nunique().unstack(fill_value=0)
+        all_days = pd.date_range(f"{month_key_heat}-01", periods=calendar.monthrange(selected_month_heat.year, selected_month_heat.month)[1])
+        day_labels = [d.strftime("%d %b") for d in all_days]
+        counts = counts.reindex(columns=day_labels, fill_value=0)
+        st.caption("Interpretation: 0 = no assigned employee working; 1 = one assigned employee working; 2+ = multiple assigned employees working. These are indicators, not configurable minimum-staffing rules.")
+        st.markdown("🟥 **0 staff** &nbsp;&nbsp; 🟨 **1 staff** &nbsp;&nbsp; 🟩 **2 or more staff**", unsafe_allow_html=True)
+        def heat_style(value):
+            if value == 0:
+                return "background-color: #fee2e2; color: #991b1b; text-align: center"
+            if value == 1:
+                return "background-color: #fef3c7; color: #92400e; text-align: center"
+            return "background-color: #dcfce7; color: #166534; text-align: center"
+        st.dataframe(counts.style.applymap(heat_style), use_container_width=True, height=520)
+        gap_total = int((counts == 0).sum().sum())
+        single_total = int((counts == 1).sum().sum())
+        a, b, c = st.columns(3)
+        a.metric("Brand/process combinations", len(counts))
+        b.metric("Zero-coverage dates", gap_total)
+        c.metric("Single-person dates", single_total)
+        if gap_total:
+            st.warning("Some brand/process combinations have no assigned employee marked Working on certain dates. Review assignments, leave and weekly-off patterns.")
+        else:
+            st.success("Every listed brand/process combination has at least one assigned employee marked Working on every date in this generated roster.")
+
+
+# ==================================================
+# 18. WHAT-IF SIMULATOR
+# ==================================================
+
+elif selected_page == "What-If Simulator":
+    st.header("🧪 What-If Availability Simulator")
+    st.write("Temporarily remove one employee from a selected date and inspect the brand/process assignments that may be affected. This simulation does not change your saved roster.")
+    employees_sim = get_employees()
+    assignments_sim = get_assignments_detail()
+    if employees_sim.empty:
+        st.info("Add employees before using the simulator.")
+    else:
+        emp_lookup = {f"{r.employee_name} (ID {r.employee_id})": int(r.employee_id) for r in employees_sim.itertuples()}
+        c1, c2 = st.columns(2)
+        with c1:
+            chosen_employee_label = st.selectbox("Employee unavailable", list(emp_lookup.keys()))
+            chosen_employee_id = emp_lookup[chosen_employee_label]
+        with c2:
+            scenario_date = st.date_input("Date of unavailability", value=date.today(), key="scenario_date")
+        employee_status = get_employee_status_for_date(chosen_employee_id, scenario_date)
+        st.info(f"Current saved status for this date: **{employee_status}**. If the month has no generated roster, the simulator uses known leave, holiday and employee availability records.")
+        affected = assignments_sim[assignments_sim["employee_id"] == chosen_employee_id].copy() if not assignments_sim.empty else pd.DataFrame()
+        if affected.empty:
+            st.warning("This employee has no brand/process assignments, so no assigned coverage can be assessed.")
+        else:
+            st.subheader("Potential impact")
+            impact_rows = []
+            for row in affected.itertuples():
+                same = assignments_sim[(assignments_sim["brand_id"] == row.brand_id) & (assignments_sim["process_id"] == row.process_id)]
+                others = []
+                for candidate in same.itertuples():
+                    if candidate.employee_id == chosen_employee_id:
+                        continue
+                    status = get_employee_status_for_date(int(candidate.employee_id), scenario_date)
+                    if status == "Working" or status == "Not Generated":
+                        others.append(candidate.employee_name)
+                impact_rows.append({
+                    "Brand": row.brand_name, "Process": row.process_name,
+                    "Other assigned employees": ", ".join(sorted(set(others))) or "None",
+                    "Coverage after removal": "Backup available" if others else "Potential coverage gap",
+                    "Backup count": len(set(others))
+                })
+            impact_df = pd.DataFrame(impact_rows).drop_duplicates(subset=["Brand", "Process"])
+            st.dataframe(impact_df, use_container_width=True, hide_index=True)
+            gaps = impact_df[impact_df["Backup count"] == 0]
+            if not gaps.empty:
+                st.error(f"{len(gaps)} brand/process assignment(s) may have no backup if this employee becomes unavailable.")
+                st.write("Suggested action: review cross-training, assign a qualified backup, or discuss a schedule change before approving the absence.")
+            else:
+                st.success("Other assigned employees are listed for all affected brand/process combinations. Confirm their skills and actual availability before making a change.")
+            st.caption("Simulation only: no employee status, leave record or roster row has been modified.")
+
+
+# ==================================================
+# 19. WORKLOAD INTELLIGENCE
+# ==================================================
+
+elif selected_page == "Workload Intelligence":
+    st.header("⚖️ Employee Workload Intelligence")
+    st.write("Compare working days in the generated monthly roster and see how many brand/process assignments each employee owns.")
+    workload_month = st.date_input("Select month", value=date.today(), key="workload_month")
+    workload_key = workload_month.strftime("%Y-%m")
+    conn = get_database_connection()
+    work_df = pd.read_sql_query("""
+        SELECT e.employee_id, e.employee_name, COALESCE(p.pod_name, 'Not Assigned') AS pod_name,
+               SUM(CASE WHEN r.status = 'Working' THEN 1 ELSE 0 END) AS working_days,
+               SUM(CASE WHEN r.status = 'Weekly Off' THEN 1 ELSE 0 END) AS weekly_offs,
+               SUM(CASE WHEN r.status = 'Leave' THEN 1 ELSE 0 END) AS leave_days
+        FROM employees e LEFT JOIN pods p ON e.pod_id = p.pod_id
+        LEFT JOIN roster r ON e.employee_id = r.employee_id AND substr(r.roster_date, 1, 7) = ?
+        GROUP BY e.employee_id, e.employee_name, p.pod_name
+        ORDER BY working_days DESC, e.employee_name
+    """, conn, params=(workload_key,))
+    assign_counts = pd.read_sql_query("SELECT employee_id, COUNT(*) AS assignment_count FROM assignments GROUP BY employee_id", conn)
+    conn.close()
+    if work_df.empty:
+        st.info("No employees found.")
+    else:
+        work_df = work_df.merge(assign_counts, on="employee_id", how="left")
+        work_df["assignment_count"] = work_df["assignment_count"].fillna(0).astype(int)
+        if int(work_df["working_days"].sum()) == 0:
+            st.info("No generated roster records found for this month. Generate a roster to view workload statistics.")
+        else:
+            avg_days = float(work_df["working_days"].mean())
+            busiest = work_df.iloc[0]
+            a, b, c = st.columns(3)
+            a.metric("Average working days", f"{avg_days:.1f}")
+            b.metric("Highest working days", int(work_df["working_days"].max()))
+            c.metric("Employees in report", len(work_df))
+            st.subheader("Working days by employee")
+            st.bar_chart(work_df.set_index("employee_name")[["working_days"]])
+            st.subheader("Workload detail")
+            st.dataframe(work_df.rename(columns={
+                "employee_id": "Employee ID", "employee_name": "Employee",
+                "pod_name": "Pod", "working_days": "Working Days",
+                "weekly_offs": "Weekly Offs", "leave_days": "Leave Days",
+                "assignment_count": "Brand/Process Assignments"
+            }), use_container_width=True, hide_index=True)
+            high = work_df[work_df["working_days"] > avg_days + 2]
+            low = work_df[work_df["working_days"] < avg_days - 2]
+            if not high.empty:
+                st.warning("Higher-than-average roster workload: " + ", ".join(high["employee_name"].tolist()))
+            if not low.empty:
+                st.info("Lower-than-average roster workload: " + ", ".join(low["employee_name"].tolist()))
+            st.caption("This is a comparison of generated Working statuses, not a measure of task difficulty, hours or productivity.")
+
+
+# ==================================================
+# 20. ACTIVITY HISTORY
+# ==================================================
+
+elif selected_page == "Activity History":
+    st.header("🕘 Activity History")
+    st.write("A simple audit trail of key actions recorded by the application.")
+    conn = get_database_connection()
+    history_df = pd.read_sql_query("""
+        SELECT activity_time AS Time, activity_type AS Activity, activity_details AS Details
+        FROM activity_history ORDER BY activity_id DESC LIMIT 250
+    """, conn)
+    conn.close()
+    if history_df.empty:
+        st.info("No activity has been recorded yet. Roster generation, leave additions and holiday additions are currently tracked.")
+    else:
+        st.dataframe(history_df, use_container_width=True, hide_index=True)
+        st.download_button("⬇️ Download activity history", history_df.to_csv(index=False).encode("utf-8"), file_name="roster_activity_history.csv", mime="text/csv")
+    st.caption("The history currently records roster generation, leave additions and public-holiday additions. It is not yet a complete audit log of every edit or deletion.")
+
+
+# ==================================================
 # 16. FOOTER
 # ==================================================
 
 st.divider()
 st.caption(
-    "Smart Roster Management System | "
-    "Employee Scheduling & Operations Management"
+    "Smart Roster Intelligence | Workforce Scheduling & Operations Analytics"
 )
